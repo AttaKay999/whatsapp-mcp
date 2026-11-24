@@ -15,4 +15,4 @@ fi
 
 # Start the Python MCP server on port 8000
 cd /app/whatsapp-mcp-server
-exec uv run main.py
+exec /app/whatsapp-mcp-server/.venv/bin/python main.py
