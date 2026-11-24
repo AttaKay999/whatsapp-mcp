@@ -1,5 +1,5 @@
 # Stage 1: Build Go WhatsApp Bridge
-FROM golang:1.23-bookworm AS go-builder
+FROM golang:1.24-bookworm AS go-builder
 WORKDIR /build
 COPY whatsapp-bridge/ ./
 RUN CGO_ENABLED=1 go build -o whatsapp-bridge main.go
