@@ -249,4 +249,4 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
 if __name__ == "__main__":
     mcp.settings.host = "0.0.0.0"
     mcp.settings.port = 8000
-    mcp.run(transport="sse")
+mcp.run(transport="streamable-http")
