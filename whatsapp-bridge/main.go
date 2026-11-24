@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"net/url"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/mdp/qrterminal"
@@ -871,6 +872,8 @@ func main() {
 			if evt.Event == "code" {
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				fmt.Printf("\nQR IMAGE LINK: https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=%s\n\n", url.QueryEscape(evt.Code))
+				
 			} else if evt.Event == "success" {
 				connected <- true
 				break
