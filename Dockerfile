@@ -20,8 +20,7 @@ COPY --from=go-builder /build/whatsapp-bridge /app/whatsapp-bridge/whatsapp-brid
 
 COPY whatsapp-mcp-server/ /app/whatsapp-mcp-server/
 WORKDIR /app/whatsapp-mcp-server
-RUN uv sync --frozen
-RUN uv pip install --python /app/whatsapp-mcp-server/.venv/bin/python --upgrade "mcp[cli]>=1.8.0"
+RUN uv sync
 
 WORKDIR /app
 COPY start.sh /app/start.sh
