@@ -248,4 +248,5 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
 
 if __name__ == "__main__":
     # Initialize and run the server
-    mcp.run(transport='stdio')
+    if __name__ == "__main__":
+    mcp.run(transport="sse", host="0.0.0.0", port=8000)
