@@ -2,7 +2,7 @@
 FROM golang:1.24-bookworm AS go-builder
 WORKDIR /build
 COPY whatsapp-bridge/ ./
-RUN CGO_ENABLED=1 go build -o whatsapp-bridge main.go
+RUN go get go.mau.fi/whatsmeow@latest && go mod tidy && CGO_ENABLED=1 go build -o whatsapp-bridge main.go
 
 # Stage 2: Runtime with Python + uv
 FROM python:3.11-slim-bookworm
