@@ -115,13 +115,15 @@ class OAuth:
 
     # ---------- metadata ----------
     def resource_metadata_url(self) -> str:
-        return f"{self.base_url}/.well-known/oauth-protected-resource"
+        return f"{self.base_url}/.well-known/oauth-protected-resource/mcp"
 
     async def protected_resource(self, request: Request) -> Response:
         if request.method == "OPTIONS":
             return _cors(Response(status_code=204))
+        path = request.url.path.rstrip("/")
+        resource = f"{self.base_url}/mcp" if path.endswith("/mcp") else self.base_url
         return _json({
-            "resource": f"{self.base_url}/mcp",
+            "resource": resource,
             "authorization_servers": [self.base_url],
             "bearer_methods_supported": ["header"],
             "scopes_supported": ["mcp"],
