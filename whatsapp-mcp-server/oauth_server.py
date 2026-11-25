@@ -46,8 +46,11 @@ def _pkce_ok(verifier: str, challenge: str) -> bool:
 
 def _cors(resp: Response) -> Response:
     resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "authorization, content-type, mcp-protocol-version"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = (
+        "authorization, content-type, accept, mcp-protocol-version, mcp-session-id, last-event-id")
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, HEAD, OPTIONS"
+    resp.headers["Access-Control-Expose-Headers"] = "WWW-Authenticate, Mcp-Session-Id"
+    resp.headers["Access-Control-Max-Age"] = "86400"
     return resp
 
 
@@ -126,7 +129,7 @@ class OAuth:
             "resource": resource,
             "authorization_servers": [self.base_url],
             "bearer_methods_supported": ["header"],
-            "scopes_supported": ["mcp"],
+            "scopes_supported": ["mcp", "openid", "offline_access"],
             "resource_name": "WhatsApp MCP",
         })
 
@@ -137,15 +140,15 @@ class OAuth:
             "issuer": self.base_url,
             "authorization_endpoint": f"{self.base_url}/authorize",
             "token_endpoint": f"{self.base_url}/token",
-            "registration_endpoint": f"{self.base_url}/register",
+            **({} if os.environ.get("OAUTH_DISABLE_DCR") == "1" else
+               {"registration_endpoint": f"{self.base_url}/register"}),
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
-            "scopes_supported": ["mcp"],
+            "scopes_supported": ["mcp", "openid", "offline_access"],
             "revocation_endpoint": f"{self.base_url}/revoke",
             "revocation_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
-            "service_documentation": f"{self.base_url}/authorize",
         })
 
     async def revoke(self, request: Request) -> Response:
@@ -362,8 +365,15 @@ button{{margin-top:14px;width:100%;padding:12px;font-size:16px;font-weight:600;b
                 row = c.execute("SELECT * FROM tokens WHERE token_hash=? AND kind='refresh'", (_hash(rt),)).fetchone()
                 if not row or row["expires_at"] < time.time() or row["client_id"] != client["client_id"]:
                     return _oauth_error("invalid_grant", "Invalid or expired refresh token")
-                c.execute("DELETE FROM tokens WHERE token_hash=?", (_hash(rt),))  # rotate
-                return _json(self._issue(c, client["client_id"]))
+                # Google expects a stable refresh token: keep it, extend its life, issue a new access token
+                now = time.time()
+                c.execute("UPDATE tokens SET expires_at=? WHERE token_hash=?", (now + REFRESH_TTL, _hash(rt)))
+                c.execute("DELETE FROM tokens WHERE expires_at < ?", (now,))
+                access = secrets.token_urlsafe(32)
+                c.execute("INSERT INTO tokens VALUES (?,?,?,?,?)",
+                          (_hash(access), "access", client["client_id"], "mcp", now + ACCESS_TTL))
+                return _json({"access_token": access, "token_type": "Bearer", "expires_in": ACCESS_TTL,
+                              "refresh_token": rt, "scope": "mcp"})
         return _oauth_error("unsupported_grant_type", "Use authorization_code or refresh_token")
 
     def verify_access(self, token: str) -> bool:
@@ -420,6 +430,9 @@ class AuthLayer:
         if self.oauth_app and (path.startswith("/.well-known/") or path in ("/register", "/authorize", "/token", "/revoke")):
             await self.oauth_app(scope, receive, send)
             return
+        if scope.get("method") == "OPTIONS":  # CORS preflight must never need credentials
+            await _cors(Response(status_code=204))(scope, receive, send)
+            return
         auth = dict(scope["headers"]).get(b"authorization", b"").decode("latin-1")
         if not auth:
             print(f"[auth] unauthenticated {scope.get('method')} {path} -> 401", flush=True)
@@ -443,11 +456,12 @@ class AuthLayer:
         )
         challenge = "Bearer"
         if self.oauth:
-            challenge = (f'Bearer realm="whatsapp-mcp", resource_metadata="{self.oauth.resource_metadata_url()}", '
-                         f'scope="mcp"')
-        body = json.dumps({"jsonrpc": "2.0", "id": None,
-                           "error": {"code": -32001, "message": "Unauthorized: sign in required"}}).encode()
+            challenge = f'Bearer resource_metadata="{self.oauth.resource_metadata_url()}"'
+        body = json.dumps({"error": "unauthorized", "error_description": "Sign in required"}).encode()
         await send({"type": "http.response.start", "status": 401, "headers": [
             (b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
+            (b"cache-control", b"no-store"),
+            (b"access-control-allow-origin", b"*"),
+            (b"access-control-expose-headers", b"WWW-Authenticate"),
             (b"www-authenticate", challenge.encode())]})
-        await send({"type": "http.response.body", "body": body})
+        await send({"type": "http.response.body", "body": b"" if scope.get("method") == "HEAD" else body})
