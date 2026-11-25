@@ -670,10 +670,13 @@ func extractDirectPathFromURL(url string) string {
 
 	pathPart := parts[1]
 
-	// Remove query parameters
-	pathPart = strings.SplitN(pathPart, "?", 2)[0]
+	// Keep the query string (ccb/oh/oe/...): it carries the signature WhatsApp
+	// checks, and whatsmeow appends "&hash=..." to this path. Stripping it
+	// makes every download fail with HTTP 403.
+	if !strings.Contains(pathPart, "?") {
+		pathPart += "?"
+	}
 
-	// Create proper direct path format
 	return "/" + pathPart
 }
 

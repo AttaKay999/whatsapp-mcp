@@ -2,6 +2,7 @@ import dataclasses
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+import media_share
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -20,6 +21,7 @@ from whatsapp import (
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp", host="0.0.0.0", port=8000, stateless_http=True)
+mcp.custom_route("/media/{token}/{filename}", methods=["GET"])(media_share.serve_media)
 
 def _plain(obj: Any) -> Any:
     """Convert dataclasses/datetimes into plain JSON-safe dicts/lists."""
@@ -256,6 +258,26 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     return {"success": False, "message": error or "Failed to download media"}
 
 @mcp.tool()
+def get_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
+    """Get a temporary download link for the media (image, video, audio, voice note, document) of a WhatsApp message.
+
+    The file is downloaded on the server and shared via a short-lived link. Fetch the link with
+    an HTTP GET (for example the returned `download_with` command) to save the file on your own
+    machine, then open or analyze it there. Works for any media type.
+
+    Args:
+        message_id: The ID of the message containing the media
+        chat_jid: The JID of the chat containing the message
+    """
+    file_path, error = whatsapp_download_media_with_error(message_id, chat_jid)
+    if not file_path:
+        return {"success": False, "stage": "download", "message": error or "Failed to download media"}
+    try:
+        return {"success": True, **media_share.share(file_path)}
+    except OSError as e:
+        return {"success": False, "stage": "share", "message": str(e)}
+
+@mcp.tool()
 def forward_media(message_id: str, chat_jid: str, recipient: str) -> Dict[str, Any]:
     """Forward the media of a WhatsApp message to another chat or phone number, entirely on the server.
 
@@ -311,7 +333,7 @@ class BearerAuth:
         self.token = token.encode()
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
+        if scope["type"] == "http" and not scope.get("path", "").startswith("/media/"):
             import hmac
             supplied = dict(scope["headers"]).get(b"authorization", b"")
             if not hmac.compare_digest(supplied, b"Bearer " + self.token):
