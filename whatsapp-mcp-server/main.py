@@ -296,5 +296,32 @@ def bridge_status() -> Dict[str, Any]:
         info["bridge_error"] = str(e)
     return info
 
+class BearerAuth:
+    """ASGI middleware: require 'Authorization: Bearer <token>' on every HTTP request."""
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token.encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            import hmac
+            supplied = dict(scope["headers"]).get(b"authorization", b"")
+            if not hmac.compare_digest(supplied, b"Bearer " + self.token):
+                body = b'{"error":"unauthorized"}'
+                await send({"type": "http.response.start", "status": 401,
+                            "headers": [(b"content-type", b"application/json"),
+                                        (b"content-length", str(len(body)).encode())]})
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
+
+
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    import os
+    auth_token = os.environ.get("MCP_AUTH_TOKEN")
+    if auth_token:
+        import uvicorn
+        uvicorn.run(BearerAuth(mcp.streamable_http_app(), auth_token), host="0.0.0.0", port=8000)
+    else:
+        mcp.run(transport="streamable-http")
