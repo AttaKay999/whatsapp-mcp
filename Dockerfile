@@ -21,7 +21,7 @@ COPY --from=go-builder /build/whatsapp-bridge /app/whatsapp-bridge/whatsapp-brid
 
 COPY whatsapp-mcp-server/ /app/whatsapp-mcp-server/
 WORKDIR /app/whatsapp-mcp-server
-RUN uv sync && .venv/bin/python -c "from mcp.server.fastmcp import FastMCP; import mcp, importlib.metadata as m; print('mcp', m.version('mcp'))"
+RUN uv sync && .venv/bin/python -c "import importlib.metadata as m; print('mcp', m.version('mcp')); import main, oauth_server, media_share, scheduler; print('server modules import OK')"
 
 WORKDIR /app
 COPY start.sh /app/start.sh

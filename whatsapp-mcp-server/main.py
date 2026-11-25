@@ -409,27 +409,6 @@ def cancel_scheduled(job_id: int) -> Dict[str, Any]:
     return {"success": False, "message": f"Job {job_id} not found or is no longer pending"}
 
 
-class BearerAuth:
-    """ASGI middleware: require 'Authorization: Bearer <token>' on every HTTP request."""
-
-    def __init__(self, app, token: str):
-        self.app = app
-        self.token = token.encode()
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and not scope.get("path", "").startswith("/media/"):
-            import hmac
-            supplied = dict(scope["headers"]).get(b"authorization", b"")
-            if not hmac.compare_digest(supplied, b"Bearer " + self.token):
-                body = b'{"error":"unauthorized"}'
-                await send({"type": "http.response.start", "status": 401,
-                            "headers": [(b"content-type", b"application/json"),
-                                        (b"content-length", str(len(body)).encode())]})
-                await send({"type": "http.response.body", "body": body})
-                return
-        await self.app(scope, receive, send)
-
-
 if __name__ == "__main__":
     import os
     try:
@@ -437,8 +416,25 @@ if __name__ == "__main__":
     except Exception as e:  # the MCP server must still come up if the scheduler cannot
         print(f"[scheduler] failed to start: {e}", flush=True)
     auth_token = os.environ.get("MCP_AUTH_TOKEN")
-    if auth_token:
+    oauth_password = os.environ.get("OAUTH_PASSWORD")
+    if auth_token or oauth_password:
         import uvicorn
-        uvicorn.run(BearerAuth(mcp.streamable_http_app(), auth_token), host="0.0.0.0", port=8000)
+        import oauth_server
+
+        oauth = None
+        if oauth_password:
+            oauth = oauth_server.OAuth(
+                media_share.PUBLIC_BASE_URL,
+                oauth_password,
+                static_client_id=os.environ.get("OAUTH_CLIENT_ID", ""),
+                static_client_secret=os.environ.get("OAUTH_CLIENT_SECRET", ""),
+            )
+        uvicorn.run(
+            oauth_server.AuthLayer(mcp.streamable_http_app(), auth_token, oauth),
+            host="0.0.0.0",
+            port=8000,
+            proxy_headers=True,
+            forwarded_allow_ips="*",
+        )
     else:
         mcp.run(transport="streamable-http")
