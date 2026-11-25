@@ -730,6 +730,25 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
+def download_media_with_error(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
+    """Download media; return (path, error_message). error_message is '' on success."""
+    try:
+        response = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/download",
+            json={"message_id": message_id, "chat_jid": chat_jid},
+            timeout=120,
+        )
+        try:
+            result = response.json()
+        except ValueError:
+            return None, f"HTTP {response.status_code}: {response.text[:300]}"
+        if response.status_code == 200 and result.get("success", False):
+            return result.get("path"), ""
+        return None, result.get("message") or f"HTTP {response.status_code}"
+    except requests.RequestException as e:
+        return None, f"Could not reach the WhatsApp bridge: {e}"
+
+
 def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     """Download media from a message and return the local file path.
     

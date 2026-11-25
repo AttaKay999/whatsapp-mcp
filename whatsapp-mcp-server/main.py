@@ -14,7 +14,8 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    download_media_with_error as whatsapp_download_media_with_error
 )
 
 # Initialize FastMCP server
@@ -240,28 +241,34 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
-    """Download media from a WhatsApp message and get the local file path.
-    
+    """Download media from a WhatsApp message to the SERVER's disk (not your computer).
+
+    The returned file_path is only valid on the server. To pass the file on to someone,
+    use forward_media instead.
+
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
-    
-    Returns:
-        A dictionary containing success status, a status message, and the file path if successful
     """
-    file_path = whatsapp_download_media(message_id, chat_jid)
-    
+    file_path, error = whatsapp_download_media_with_error(message_id, chat_jid)
     if file_path:
-        return {
-            "success": True,
-            "message": "Media downloaded successfully",
-            "file_path": file_path
-        }
-    else:
-        return {
-            "success": False,
-            "message": "Failed to download media"
-        }
+        return {"success": True, "message": "Media downloaded successfully", "file_path": file_path}
+    return {"success": False, "message": error or "Failed to download media"}
+
+@mcp.tool()
+def forward_media(message_id: str, chat_jid: str, recipient: str) -> Dict[str, Any]:
+    """Forward the media of a WhatsApp message to another chat or phone number, entirely on the server.
+
+    Args:
+        message_id: The ID of the message containing the media
+        chat_jid: The JID of the chat containing the message
+        recipient: Phone number with country code (no +) or a JID to send the media to
+    """
+    file_path, error = whatsapp_download_media_with_error(message_id, chat_jid)
+    if not file_path:
+        return {"success": False, "stage": "download", "message": error or "Failed to download media"}
+    success, message = whatsapp_send_file(recipient, file_path)
+    return {"success": success, "stage": "send", "message": message}
 
 @mcp.tool()
 def bridge_status() -> Dict[str, Any]:
