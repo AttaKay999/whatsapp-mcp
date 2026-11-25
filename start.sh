@@ -1,18 +1,18 @@
 #!/bin/sh
-set -e
-
-# Start the Go WhatsApp bridge in the background
+# Run the Go WhatsApp bridge in a restart loop so a fresh pairing QR code is
+# printed every few minutes until the device is linked, and so the bridge
+# recovers if it ever exits.
 cd /app/whatsapp-bridge
-./whatsapp-bridge &
-BRIDGE_PID=$!
+(
+  while true; do
+    echo "[start.sh] starting WhatsApp bridge..."
+    ./whatsapp-bridge
+    echo "[start.sh] bridge exited (code $?), restarting in 5s..." >&2
+    sleep 5
+  done
+) &
 
-# Wait briefly for the bridge to initialize
+# Give the bridge a moment, then start the Python MCP server on port 8000
 sleep 3
-
-if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
-  echo "WARNING: WhatsApp bridge exited during startup. Check the bridge logs above." >&2
-fi
-
-# Start the Python MCP server on port 8000
 cd /app/whatsapp-mcp-server
 exec /app/whatsapp-mcp-server/.venv/bin/python main.py
