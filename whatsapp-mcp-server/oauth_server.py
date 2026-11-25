@@ -117,14 +117,15 @@ class OAuth:
         return c
 
     # ---------- metadata ----------
-    def resource_metadata_url(self) -> str:
-        return f"{self.base_url}/.well-known/oauth-protected-resource/mcp"
+    def resource_metadata_url(self, suffix: str = "mcp") -> str:
+        return f"{self.base_url}/.well-known/oauth-protected-resource/{suffix}"
 
     async def protected_resource(self, request: Request) -> Response:
         if request.method == "OPTIONS":
             return _cors(Response(status_code=204))
         path = request.url.path.rstrip("/")
-        resource = f"{self.base_url}/mcp" if path.endswith("/mcp") else self.base_url
+        resource = (f"{self.base_url}/mcp" if path.endswith("/mcp") else
+                    f"{self.base_url}/sse" if path.endswith("/sse") else self.base_url)
         return _json({
             "resource": resource,
             "authorization_servers": [self.base_url],
@@ -384,7 +385,8 @@ button{{margin-top:14px;width:100%;padding:12px;font-size:16px;font-weight:600;b
         return bool(row and row["expires_at"] > time.time())
 
     def build_app(self) -> Starlette:
-        wk = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"]
+        wk = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp",
+              "/.well-known/oauth-protected-resource/sse"]
         asm = ["/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp",
                "/.well-known/openid-configuration", "/.well-known/openid-configuration/mcp"]
         routes = [Route(p, self.protected_resource, methods=["GET", "OPTIONS"]) for p in wk]
@@ -424,6 +426,10 @@ class AuthLayer:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
+        alias = path.rstrip("/") == "/sse"
+        if alias:  # same server answers on /sse as on /mcp
+            scope = dict(scope, path="/mcp", raw_path=b"/mcp")
+            path = "/mcp"
         if path.startswith("/media/"):
             await self.app(scope, receive, send)
             return
@@ -456,7 +462,7 @@ class AuthLayer:
         )
         challenge = "Bearer"
         if self.oauth:
-            challenge = f'Bearer resource_metadata="{self.oauth.resource_metadata_url()}"'
+            challenge = f'Bearer resource_metadata="{self.oauth.resource_metadata_url("sse" if alias else "mcp")}"'
         body = json.dumps({"error": "unauthorized", "error_description": "Sign in required"}).encode()
         await send({"type": "http.response.start", "status": 401, "headers": [
             (b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
