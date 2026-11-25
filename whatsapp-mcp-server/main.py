@@ -1,8 +1,9 @@
 import dataclasses
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from mcp.server.fastmcp import FastMCP
 import media_share
+import scheduler
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -16,7 +17,9 @@ from whatsapp import (
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
-    download_media_with_error as whatsapp_download_media_with_error
+    download_media_with_error as whatsapp_download_media_with_error,
+    normalize_recipient as whatsapp_normalize_recipient,
+    get_message_caption as whatsapp_get_message_caption
 )
 
 # Initialize FastMCP server
@@ -204,20 +207,21 @@ def send_message(
     }
 
 @mcp.tool()
-def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
+def send_file(recipient: str, media_path: str, caption: str = "") -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
     
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the media file to send (image, video, document)
+        caption: Optional caption shown with the image, video or document
     
     Returns:
         A dictionary containing success status and a status message
     """
     
     # Call the whatsapp_send_file function
-    success, status_message = whatsapp_send_file(recipient, media_path)
+    success, status_message = whatsapp_send_file(recipient, media_path, caption)
     return {
         "success": success,
         "message": status_message
@@ -278,19 +282,21 @@ def get_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
         return {"success": False, "stage": "share", "message": str(e)}
 
 @mcp.tool()
-def forward_media(message_id: str, chat_jid: str, recipient: str) -> Dict[str, Any]:
+def forward_media(message_id: str, chat_jid: str, recipient: str, caption: str = "") -> Dict[str, Any]:
     """Forward the media of a WhatsApp message to another chat or phone number, entirely on the server.
 
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
         recipient: Phone number with country code (no +) or a JID to send the media to
+        caption: Optional caption. If empty, the original message's caption is reused.
     """
     file_path, error = whatsapp_download_media_with_error(message_id, chat_jid)
     if not file_path:
         return {"success": False, "stage": "download", "message": error or "Failed to download media"}
-    success, message = whatsapp_send_file(recipient, file_path)
-    return {"success": success, "stage": "send", "message": message}
+    caption = caption or whatsapp_get_message_caption(message_id, chat_jid)
+    success, message = whatsapp_send_file(recipient, file_path, caption)
+    return {"success": success, "stage": "send", "message": message, "caption_sent": caption}
 
 @mcp.tool()
 def bridge_status() -> Dict[str, Any]:
@@ -325,6 +331,84 @@ def bridge_status() -> Dict[str, Any]:
         info["bridge_error"] = str(e)
     return info
 
+def _send_job(job: Dict[str, Any]):
+    """Called by the scheduler thread for each due job."""
+    if job["media_message_id"]:
+        path, err = whatsapp_download_media_with_error(job["media_message_id"], job["media_chat_jid"])
+        if not path:
+            return False, f"media download failed: {err}"
+        caption = job["message"] or whatsapp_get_message_caption(job["media_message_id"], job["media_chat_jid"])
+        return whatsapp_send_file(job["recipient"], path, caption)
+    return whatsapp_send_message(job["recipient"], job["message"])
+
+
+@mcp.tool()
+def schedule_message(
+    recipients: Union[str, List[str]],
+    message: str = "",
+    send_at: str = "",
+    delay_minutes: float = 0,
+    repeat: str = "none",
+    media_message_id: str = "",
+    media_chat_jid: str = "",
+) -> Dict[str, Any]:
+    """Schedule a WhatsApp message (and/or media) to be sent later. Survives server restarts.
+
+    Give either send_at or delay_minutes. send_at is ISO-8601; with no timezone it is UTC
+    (the user's timezone, Africa/Accra, is UTC+0). Several recipients are sent one after
+    another with a few seconds between them.
+
+    Args:
+        recipients: Phone number(s) with country code and no + (e.g. "233558151342"), or JID(s)
+                    such as a group JID ending in @g.us. A list or a comma-separated string.
+        message: Text to send (used as the caption when media is attached)
+        send_at: When to send, e.g. "2026-11-26T09:00:00Z" or "2026-11-26T09:00:00+00:00"
+        delay_minutes: Alternative to send_at: send this many minutes from now
+        repeat: "none" (default), "daily" or "weekly"
+        media_message_id: Optional ID of an existing message whose image/video/audio/document should be sent
+        media_chat_jid: The chat JID that message is in (required with media_message_id)
+    """
+    if isinstance(recipients, str):
+        recipients = [r for r in recipients.replace(";", ",").split(",") if r.strip()]
+    try:
+        cleaned = [whatsapp_normalize_recipient(r) for r in recipients]
+        when = scheduler.parse_send_time(send_at, delay_minutes)
+        ids = scheduler.add_jobs(cleaned, message, when, repeat, media_message_id, media_chat_jid)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+    return {
+        "success": True,
+        "job_ids": ids,
+        "recipients": cleaned,
+        "send_at_utc": when.isoformat(timespec="seconds"),
+        "repeat": repeat,
+    }
+
+
+@mcp.tool()
+def list_scheduled(status: str = "pending", limit: int = 50) -> Dict[str, Any]:
+    """List scheduled messages.
+
+    Args:
+        status: pending (default), sent, failed, missed, cancelled, unknown, or all
+        limit: Maximum number of jobs to return (default 50)
+    """
+    jobs = scheduler.list_jobs(status, limit)
+    return {"count": len(jobs), "jobs": jobs}
+
+
+@mcp.tool()
+def cancel_scheduled(job_id: int) -> Dict[str, Any]:
+    """Cancel a pending scheduled message by its job id (from schedule_message or list_scheduled).
+
+    Args:
+        job_id: The id of the scheduled job
+    """
+    if scheduler.cancel(job_id):
+        return {"success": True, "message": f"Job {job_id} cancelled"}
+    return {"success": False, "message": f"Job {job_id} not found or is no longer pending"}
+
+
 class BearerAuth:
     """ASGI middleware: require 'Authorization: Bearer <token>' on every HTTP request."""
 
@@ -348,6 +432,10 @@ class BearerAuth:
 
 if __name__ == "__main__":
     import os
+    try:
+        scheduler.start(_send_job)
+    except Exception as e:  # the MCP server must still come up if the scheduler cannot
+        print(f"[scheduler] failed to start: {e}", flush=True)
     auth_token = os.environ.get("MCP_AUTH_TOKEN")
     if auth_token:
         import uvicorn

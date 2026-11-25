@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from datetime import datetime
 from dataclasses import dataclass
@@ -628,11 +629,43 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
         if 'conn' in locals():
             conn.close()
 
+def normalize_recipient(recipient: str) -> str:
+    """Accept '+233 55 815 1342', '233558151342' or a full JID; reject anything else."""
+    r = (recipient or "").strip()
+    if "@" in r:
+        return r
+    digits = re.sub(r"\D", "", r)
+    if not 7 <= len(digits) <= 15:
+        raise ValueError(
+            f"Invalid phone number '{recipient}'. Use the country code and digits only, e.g. 233558151342."
+        )
+    return digits
+
+
+def get_message_caption(message_id: str, chat_jid: str) -> str:
+    """Return the stored text/caption of a message ('' if none)."""
+    try:
+        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT content FROM messages WHERE id = ? AND chat_jid = ?", (message_id, chat_jid)
+            ).fetchone()
+        finally:
+            conn.close()
+        return (row[0] or "") if row else ""
+    except sqlite3.Error:
+        return ""
+
+
 def send_message(recipient: str, message: str) -> Tuple[bool, str]:
     try:
         # Validate input
         if not recipient:
             return False, "Recipient must be provided"
+        try:
+            recipient = normalize_recipient(recipient)
+        except ValueError as e:
+            return False, str(e)
         
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
@@ -640,7 +673,7 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
             "message": message,
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=60)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -656,11 +689,15 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
-def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
+def send_file(recipient: str, media_path: str, caption: str = "") -> Tuple[bool, str]:
     try:
         # Validate input
         if not recipient:
             return False, "Recipient must be provided"
+        try:
+            recipient = normalize_recipient(recipient)
+        except ValueError as e:
+            return False, str(e)
         
         if not media_path:
             return False, "Media path must be provided"
@@ -673,8 +710,10 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "recipient": recipient,
             "media_path": media_path
         }
+        if caption:
+            payload["message"] = caption
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=60)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -695,6 +734,10 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         # Validate input
         if not recipient:
             return False, "Recipient must be provided"
+        try:
+            recipient = normalize_recipient(recipient)
+        except ValueError as e:
+            return False, str(e)
         
         if not media_path:
             return False, "Media path must be provided"
@@ -714,7 +757,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=60)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -766,7 +809,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=60)
         
         if response.status_code == 200:
             result = response.json()
