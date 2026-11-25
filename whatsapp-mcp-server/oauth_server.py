@@ -57,7 +57,12 @@ def _json(data: Dict[str, Any], status: int = 200) -> Response:
     return _cors(resp)
 
 
+def _log(msg: str) -> None:
+    print(f"[oauth] {msg}", flush=True)
+
+
 def _oauth_error(error: str, description: str, status: int = 400) -> Response:
+    _log(f"{status} {error}: {description}")
     return _json({"error": error, "error_description": description}, status)
 
 
@@ -70,7 +75,10 @@ def _redirect_shape_ok(uri: str) -> bool:
         return False
     if u.scheme == "https" and u.netloc:
         return True
-    return u.scheme == "http" and u.hostname in ("localhost", "127.0.0.1", "::1")
+    if u.scheme == "http":
+        return u.hostname in ("localhost", "127.0.0.1", "::1")
+    blocked = {"javascript", "data", "file", "vbscript", "about", "blob", "ftp"}
+    return bool(u.scheme) and u.scheme not in blocked and bool(u.path or u.netloc)
 
 
 class OAuth:
@@ -167,6 +175,8 @@ class OAuth:
             assert isinstance(body, dict)
         except Exception:
             return _oauth_error("invalid_client_metadata", "Body must be a JSON object")
+        _log(f"register request: name={body.get('client_name')!r} redirect_uris={body.get('redirect_uris')!r} "
+             f"auth_method={body.get('token_endpoint_auth_method')!r}")
         uris = body.get("redirect_uris")
         if not isinstance(uris, list) or not uris or not all(isinstance(u, str) and _redirect_shape_ok(u) for u in uris):
             return _oauth_error("invalid_redirect_uri", "redirect_uris must be a non-empty list of https (or localhost) URIs")
@@ -241,9 +251,13 @@ button{{margin-top:14px;width:100%;padding:12px;font-size:16px;font-weight:600;b
         p = {k: v[0] for k, v in raw.items() if v}
         client = self._client(p.get("client_id", ""))
         redirect_uri = p.get("redirect_uri", "")
+        _log(f"authorize {request.method}: client={p.get('client_id')!r} redirect_uri={redirect_uri!r} "
+             f"response_type={p.get('response_type')!r} method={p.get('code_challenge_method')!r}")
         if not client:
+            _log("authorize refused: unknown client")
             return self._fail_page("Unknown client.")
         if not redirect_uri or not self._redirect_allowed(client, redirect_uri):
+            _log("authorize refused: redirect_uri not allowed")
             return self._fail_page("Invalid redirect URI.")
 
         def bounce(error: str, desc: str) -> Response:
@@ -296,6 +310,7 @@ button{{margin-top:14px;width:100%;padding:12px;font-size:16px;font-weight:600;b
             return _cors(Response(status_code=204))
         raw = parse_qs((await request.body()).decode("utf-8", "replace"), keep_blank_values=True)
         f = {k: v[0] for k, v in raw.items() if v}
+        _log(f"token request: grant={f.get('grant_type')!r} client={f.get('client_id')!r}")
         client_id, client_secret = f.get("client_id", ""), f.get("client_secret", "")
         basic = request.headers.get("authorization", "")
         if basic.lower().startswith("basic "):
@@ -388,6 +403,8 @@ class AuthLayer:
             await self.oauth_app(scope, receive, send)
             return
         auth = dict(scope["headers"]).get(b"authorization", b"").decode("latin-1")
+        if not auth:
+            print(f"[auth] unauthenticated {scope.get('method')} {path} -> 401", flush=True)
         if self._allowed(auth):
             await self.app(scope, receive, send)
             return
