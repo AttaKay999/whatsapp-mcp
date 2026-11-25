@@ -54,9 +54,10 @@ def _cors(resp: Response) -> Response:
     return resp
 
 
-def _json(data: Dict[str, Any], status: int = 200) -> Response:
+def _json(data: Dict[str, Any], status: int = 200, no_store: bool = True) -> Response:
     resp = JSONResponse(data, status_code=status)
-    resp.headers["Cache-Control"] = "no-store"
+    if no_store:
+        resp.headers["Cache-Control"] = "no-store"
     return _cors(resp)
 
 
@@ -130,9 +131,8 @@ class OAuth:
             "resource": resource,
             "authorization_servers": [self.base_url],
             "bearer_methods_supported": ["header"],
-            "scopes_supported": ["mcp", "openid", "offline_access"],
-            "resource_name": "WhatsApp MCP",
-        })
+            "scopes_supported": ["mcp"],
+        }, no_store=False)
 
     async def auth_server(self, request: Request) -> Response:
         if request.method == "OPTIONS":
@@ -141,16 +141,15 @@ class OAuth:
             "issuer": self.base_url,
             "authorization_endpoint": f"{self.base_url}/authorize",
             "token_endpoint": f"{self.base_url}/token",
+            "revocation_endpoint": f"{self.base_url}/revoke",
             **({} if os.environ.get("OAUTH_DISABLE_DCR") == "1" else
                {"registration_endpoint": f"{self.base_url}/register"}),
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
+            "scopes_supported": ["mcp"],
             "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
-            "scopes_supported": ["mcp", "openid", "offline_access"],
-            "revocation_endpoint": f"{self.base_url}/revoke",
-            "revocation_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
-        })
+            "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
+        }, no_store=False)
 
     async def revoke(self, request: Request) -> Response:
         """RFC 7009: always answers 200 so tokens cannot be probed."""
@@ -462,7 +461,10 @@ class AuthLayer:
         )
         challenge = "Bearer"
         if self.oauth:
-            challenge = f'Bearer resource_metadata="{self.oauth.resource_metadata_url("sse" if alias else "mcp")}"'
+            challenge = (
+                f'Bearer resource_metadata="{self.oauth.resource_metadata_url("sse" if alias else "mcp")}", '
+                f'scope="mcp"'
+            )
         body = json.dumps({"error": "unauthorized", "error_description": "Sign in required"}).encode()
         await send({"type": "http.response.start", "status": 401, "headers": [
             (b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
