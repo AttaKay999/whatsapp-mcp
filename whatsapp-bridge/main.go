@@ -845,6 +845,9 @@ func main() {
 	}
 	defer messageStore.Close()
 
+	client.EnableAutoReconnect = true
+	connectedEvt := make(chan struct{}, 4)
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
@@ -858,9 +861,31 @@ func main() {
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
+			select {
+			case connectedEvt <- struct{}{}:
+			default:
+			}
+
+		case *events.PairSuccess:
+			logger.Infof("Pair success: %+v", v)
+
+		case *events.PairError:
+			logger.Errorf("Pair error: %+v", v)
+
+		case *events.ConnectFailure:
+			logger.Errorf("Connect failure: %+v", v)
+
+		case *events.StreamError:
+			logger.Errorf("Stream error: %+v", v)
+
+		case *events.ClientOutdated:
+			logger.Errorf("WhatsApp says this client version is outdated")
+
+		case *events.Disconnected:
+			logger.Warnf("Disconnected from WhatsApp")
 
 		case *events.LoggedOut:
-			logger.Warnf("Device logged out, please scan QR code to log in again")
+			logger.Warnf("Device logged out (%+v), please scan QR code to log in again", v)
 		}
 	})
 
@@ -908,11 +933,12 @@ func main() {
 		connected <- true
 	}
 
-	// Wait a moment for connection to stabilize
-	time.Sleep(2 * time.Second)
-
-	if !client.IsConnected() {
-		logger.Errorf("Failed to establish stable connection")
+	// After pairing WhatsApp forces a reconnect, so wait for the real
+	// "Connected" event instead of checking the socket after a fixed delay.
+	select {
+	case <-connectedEvt:
+	case <-time.After(90 * time.Second):
+		logger.Errorf("Timed out waiting for WhatsApp login to complete")
 		return
 	}
 
