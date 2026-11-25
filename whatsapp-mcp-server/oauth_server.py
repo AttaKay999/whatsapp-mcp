@@ -127,6 +127,7 @@ class OAuth:
             "authorization_servers": [self.base_url],
             "bearer_methods_supported": ["header"],
             "scopes_supported": ["mcp"],
+            "resource_name": "WhatsApp MCP",
         })
 
     async def auth_server(self, request: Request) -> Response:
@@ -142,7 +143,21 @@ class OAuth:
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
             "scopes_supported": ["mcp"],
+            "revocation_endpoint": f"{self.base_url}/revoke",
+            "revocation_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
+            "service_documentation": f"{self.base_url}/authorize",
         })
+
+    async def revoke(self, request: Request) -> Response:
+        """RFC 7009: always answers 200 so tokens cannot be probed."""
+        if request.method == "OPTIONS":
+            return _cors(Response(status_code=204))
+        raw = parse_qs((await request.body()).decode("utf-8", "replace"), keep_blank_values=True)
+        token = (raw.get("token") or [""])[0]
+        if token:
+            with self._conn() as c:
+                c.execute("DELETE FROM tokens WHERE token_hash=?", (_hash(token),))
+        return _json({})
 
     # ---------- clients ----------
     def _client(self, client_id: str) -> Optional[Dict[str, Any]]:
@@ -368,6 +383,7 @@ button{{margin-top:14px;width:100%;padding:12px;font-size:16px;font-weight:600;b
             Route("/register", self.register, methods=["POST", "OPTIONS"]),
             Route("/authorize", self.authorize, methods=["GET", "POST"]),
             Route("/token", self.token, methods=["POST", "OPTIONS"]),
+            Route("/revoke", self.revoke, methods=["POST", "OPTIONS"]),
         ]
         return Starlette(routes=routes)
 
@@ -401,7 +417,7 @@ class AuthLayer:
         if path.startswith("/media/"):
             await self.app(scope, receive, send)
             return
-        if self.oauth_app and (path.startswith("/.well-known/") or path in ("/register", "/authorize", "/token")):
+        if self.oauth_app and (path.startswith("/.well-known/") or path in ("/register", "/authorize", "/token", "/revoke")):
             await self.oauth_app(scope, receive, send)
             return
         auth = dict(scope["headers"]).get(b"authorization", b"").decode("latin-1")
@@ -410,10 +426,27 @@ class AuthLayer:
         if self._allowed(auth):
             await self.app(scope, receive, send)
             return
+        # drain the request body (and log a sample of what the caller sent) before refusing
+        chunks, more = [], True
+        while more:
+            msg = await receive()
+            if msg["type"] != "http.request":
+                break
+            chunks.append(msg.get("body", b""))
+            more = msg.get("more_body", False)
+        h = dict(scope["headers"])
+        print(
+            f"[auth] probe {scope.get('method')} {path} ua={h.get(b'user-agent', b'').decode('latin-1')[:80]!r} "
+            f"accept={h.get(b'accept', b'').decode('latin-1')[:80]!r} ctype={h.get(b'content-type', b'').decode('latin-1')[:60]!r} "
+            f"body={b''.join(chunks)[:400]!r}",
+            flush=True,
+        )
         challenge = "Bearer"
         if self.oauth:
-            challenge = f'Bearer resource_metadata="{self.oauth.resource_metadata_url()}"'
-        body = b'{"error":"unauthorized"}'
+            challenge = (f'Bearer realm="whatsapp-mcp", resource_metadata="{self.oauth.resource_metadata_url()}", '
+                         f'scope="mcp"')
+        body = json.dumps({"jsonrpc": "2.0", "id": None,
+                           "error": {"code": -32001, "message": "Unauthorized: sign in required"}}).encode()
         await send({"type": "http.response.start", "status": 401, "headers": [
             (b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
             (b"www-authenticate", challenge.encode())]})
