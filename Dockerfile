@@ -2,6 +2,7 @@
 FROM golang:bookworm AS go-builder
 WORKDIR /build
 COPY whatsapp-bridge/ ./
+ARG CACHEBUST=1
 RUN go get go.mau.fi/whatsmeow@latest && go mod tidy && CGO_ENABLED=1 go build -o whatsapp-bridge main.go
 
 

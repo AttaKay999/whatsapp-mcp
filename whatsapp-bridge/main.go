@@ -25,6 +25,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -791,6 +792,15 @@ func main() {
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")
+
+	// Always announce WhatsApp's current web client version. A stale version
+	// makes WhatsApp reject us ("Client outdated (405)") or refuse pairing.
+	if ver, err := whatsmeow.GetLatestVersion(context.Background(), nil); err != nil {
+		logger.Warnf("Could not fetch latest WhatsApp version, using built-in: %v", err)
+	} else {
+		store.SetWAVersion(*ver)
+		logger.Infof("Using WhatsApp client version %s", ver.String())
+	}
 
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
