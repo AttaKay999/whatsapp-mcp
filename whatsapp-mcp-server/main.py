@@ -344,7 +344,7 @@ def _send_job(job: Dict[str, Any]):
 
 @mcp.tool()
 def schedule_message(
-    recipients: Union[str, List[str]],
+    recipients: str,
     message: str = "",
     send_at: str = "",
     delay_minutes: float = 0,
@@ -360,7 +360,7 @@ def schedule_message(
 
     Args:
         recipients: Phone number(s) with country code and no + (e.g. "233558151342"), or JID(s)
-                    such as a group JID ending in @g.us. A list or a comma-separated string.
+                    such as a group JID ending in @g.us. For several, separate them with commas.
         message: Text to send (used as the caption when media is attached)
         send_at: When to send, e.g. "2026-11-26T09:00:00Z" or "2026-11-26T09:00:00+00:00"
         delay_minutes: Alternative to send_at: send this many minutes from now
