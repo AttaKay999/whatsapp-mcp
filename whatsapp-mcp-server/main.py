@@ -417,6 +417,11 @@ if __name__ == "__main__":
         print(f"[scheduler] failed to start: {e}", flush=True)
     auth_token = os.environ.get("MCP_AUTH_TOKEN")
     oauth_password = os.environ.get("OAUTH_PASSWORD")
+    print(
+        f"[auth] OAuth sign-in: {'ENABLED' if oauth_password else 'OFF (set OAUTH_PASSWORD to enable)'} | "
+        f"static token: {'ENABLED' if auth_token else 'OFF'} | public URL: {media_share.PUBLIC_BASE_URL}",
+        flush=True,
+    )
     if auth_token or oauth_password:
         import uvicorn
         import oauth_server
