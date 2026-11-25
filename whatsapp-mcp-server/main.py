@@ -263,5 +263,38 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "message": "Failed to download media"
         }
 
+@mcp.tool()
+def bridge_status() -> Dict[str, Any]:
+    """Diagnose the WhatsApp bridge: database location, row counts, and whether the bridge is reachable."""
+    import os
+    import socket
+    import sqlite3
+    from whatsapp import MESSAGES_DB_PATH
+
+    info: Dict[str, Any] = {
+        "db_path": os.path.abspath(MESSAGES_DB_PATH),
+        "db_exists": os.path.exists(MESSAGES_DB_PATH),
+    }
+    store_dir = os.path.dirname(os.path.abspath(MESSAGES_DB_PATH))
+    info["store_files"] = sorted(os.listdir(store_dir)) if os.path.isdir(store_dir) else None
+    if info["db_exists"]:
+        try:
+            conn = sqlite3.connect(MESSAGES_DB_PATH)
+            cur = conn.cursor()
+            info["tables"] = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+            info["chat_count"] = cur.execute("SELECT COUNT(*) FROM chats").fetchone()[0]
+            info["message_count"] = cur.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            info["latest_message_time"] = cur.execute("SELECT MAX(timestamp) FROM messages").fetchone()[0]
+            conn.close()
+        except sqlite3.Error as e:
+            info["db_error"] = str(e)
+    try:
+        socket.create_connection(("localhost", 8080), timeout=2).close()
+        info["bridge_rest_reachable"] = True
+    except OSError as e:
+        info["bridge_rest_reachable"] = False
+        info["bridge_error"] = str(e)
+    return info
+
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")
