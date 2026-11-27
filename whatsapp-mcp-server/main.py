@@ -19,7 +19,9 @@ from whatsapp import (
     download_media as whatsapp_download_media,
     download_media_with_error as whatsapp_download_media_with_error,
     normalize_recipient as whatsapp_normalize_recipient,
-    get_message_caption as whatsapp_get_message_caption
+    get_message_caption as whatsapp_get_message_caption,
+    get_group_members as whatsapp_get_group_members,
+    send_to_group_members as whatsapp_send_to_group_members
 )
 
 # Initialize FastMCP server
@@ -410,6 +412,43 @@ def cancel_scheduled(job_id: int) -> Dict[str, Any]:
     if scheduler.cancel(job_id):
         return {"success": True, "message": f"Job {job_id} cancelled"}
     return {"success": False, "message": f"Job {job_id} not found or is no longer pending"}
+
+
+@mcp.tool()
+def get_group_members(group: str) -> Dict[str, Any]:
+    """List the members of a WhatsApp group, with names, phone numbers and admin status.
+
+    Args:
+        group: The group name (e.g. "Med Class") or group JID ending in @g.us
+    """
+    ok, info = whatsapp_get_group_members(group)
+    return {"success": ok, **info}
+
+
+@mcp.tool()
+def send_to_group_members(
+    group: str,
+    message: str,
+    exclude: Optional[List[str]] = None,
+    confirm: bool = False,
+    delay_seconds: float = 4.0,
+    max_recipients: int = 50
+) -> Dict[str, Any]:
+    """Send a message PRIVATELY to each member of a group (one direct message per person).
+
+    ALWAYS call first with confirm=false and show the user the preview list.
+    Only call again with confirm=true after the user explicitly approves.
+
+    Args:
+        group: Group name or group JID
+        message: Text to send to each member
+        exclude: Names, phone numbers or JIDs to skip (e.g. yourself)
+        confirm: false = preview only (default); true = actually send
+        delay_seconds: Pause between messages (min 2s) to avoid WhatsApp spam flags
+        max_recipients: Safety cap (default 50)
+    """
+    ok, info = whatsapp_send_to_group_members(group, message, exclude, confirm, delay_seconds, max_recipients)
+    return {"success": ok, **info}
 
 
 if __name__ == "__main__":

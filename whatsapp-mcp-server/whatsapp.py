@@ -6,6 +6,7 @@ from typing import Optional, List, Tuple
 import os.path
 import requests
 import json
+import time
 import audio
 
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
@@ -955,3 +956,81 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Group members
+# ---------------------------------------------------------------------------
+
+def _resolve_group_jid(group: str) -> str:
+    """Accept a group JID or a group name; return the group JID."""
+    g = (group or "").strip()
+    if g.endswith("@g.us"):
+        return g
+    jid = normalize_recipient(g)  # raises ValueError if no/several matches
+    if not jid.endswith("@g.us"):
+        raise ValueError(f"'{group}' is a contact, not a group.")
+    return jid
+
+
+def get_group_members(group: str) -> Tuple[bool, dict]:
+    """Return (ok, {group_name, group_jid, members:[{jid, phone_number, name, is_admin}]})."""
+    try:
+        group_jid = _resolve_group_jid(group)
+    except ValueError as e:
+        return False, {"message": str(e)}
+    try:
+        response = requests.post(f"{WHATSAPP_API_BASE_URL}/group-members",
+                                 json={"group_jid": group_jid}, timeout=60)
+        result = response.json()
+    except requests.RequestException as e:
+        return False, {"message": f"Request error: {e}"}
+    except ValueError:
+        return False, {"message": f"Bridge returned HTTP {response.status_code}: {response.text[:200]}. "
+                                  "Is the updated whatsapp-bridge running?"}
+    if not result.get("success"):
+        return False, {"message": result.get("message", "Unknown error")}
+    members = []
+    for m in result.get("members", []):
+        jid = m.get("jid", "")
+        members.append({
+            "jid": jid,
+            "phone_number": _user_part(jid),
+            "name": (lambda n: _user_part(jid) if n == jid else n)(resolve_name(jid)),
+            "is_admin": bool(m.get("is_admin") or m.get("is_super_admin")),
+        })
+    members.sort(key=lambda x: (not x["is_admin"], (x["name"] or "").lower()))
+    return True, {"group_name": result.get("group_name") or group, "group_jid": group_jid,
+                  "member_count": len(members), "members": members}
+
+
+def send_to_group_members(group: str, message: str, exclude: Optional[List[str]] = None,
+                          confirm: bool = False, delay_seconds: float = 4.0,
+                          max_recipients: int = 50) -> Tuple[bool, dict]:
+    """Message each group member privately. Without confirm=True it only previews who would get it."""
+    if not message:
+        return False, {"message": "Message must be provided"}
+    ok, info = get_group_members(group)
+    if not ok:
+        return False, info
+    excl = {e.strip().lower() for e in (exclude or []) if e.strip()}
+    targets = [m for m in info["members"]
+               if m["jid"].lower() not in excl and m["phone_number"] not in excl
+               and (m["name"] or "").lower() not in excl]
+    preview = {"group_name": info["group_name"], "recipient_count": len(targets),
+               "recipients": [f'{m["name"]} ({m["phone_number"]})' for m in targets]}
+    if len(targets) > max_recipients:
+        return False, {**preview, "message": f"{len(targets)} recipients is above the limit of "
+                       f"{max_recipients}. Raise max_recipients if you really mean it."}
+    if not confirm:
+        return True, {**preview, "sent": False,
+                      "message": "Preview only. Nothing sent. Call again with confirm=true to send."}
+    results = []
+    for i, m in enumerate(targets):
+        if i:
+            time.sleep(max(delay_seconds, 2.0))  # spacing reduces the risk of WhatsApp flagging the number
+        sent, status = send_message(m["jid"], message)
+        results.append({"name": m["name"], "jid": m["jid"], "success": sent, "message": status})
+    n_ok = sum(r["success"] for r in results)
+    return n_ok == len(results), {"group_name": info["group_name"], "sent": n_ok,
+                                  "failed": len(results) - n_ok, "results": results}

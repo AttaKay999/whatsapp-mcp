@@ -817,6 +817,47 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
+	// Handler for listing the members of a group (read-only)
+	http.HandleFunc("/api/group-members", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			GroupJID string `json:"group_jid"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.GroupJID == "" {
+			http.Error(w, "group_jid is required", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		groupJID, err := types.ParseJID(req.GroupJID)
+		if err != nil || groupJID.Server != types.GroupServer {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Not a valid group JID (must end in @g.us)"})
+			return
+		}
+		info, err := client.GetGroupInfo(context.Background(), groupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": fmt.Sprintf("Failed to get group info: %v", err)})
+			return
+		}
+		members := make([]map[string]interface{}, 0, len(info.Participants))
+		for _, p := range info.Participants {
+			members = append(members, map[string]interface{}{
+				"jid":            p.JID.String(),
+				"is_admin":       p.IsAdmin,
+				"is_super_admin": p.IsSuperAdmin,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":    true,
+			"group_name": info.Name,
+			"members":    members,
+		})
+	})
+
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
