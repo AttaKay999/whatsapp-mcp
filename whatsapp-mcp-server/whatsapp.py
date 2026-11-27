@@ -10,6 +10,8 @@ import audio
 
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
 WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+# whatsmeow's session DB: holds the synced address book (saved names + WhatsApp display names)
+WHATSAPP_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
 
 @dataclass
 class Message:
@@ -48,6 +50,94 @@ class MessageContext:
     before: List[Message]
     after: List[Message]
 
+# ---------------------------------------------------------------------------
+# Name resolution (never raises; always falls back to the raw ID)
+# ---------------------------------------------------------------------------
+
+def _user_part(jid: str) -> str:
+    return (jid or "").split('@')[0].split(':')[0]
+
+def _is_placeholder(name: Optional[str], jid: str) -> bool:
+    """True if a stored name is really just a number / JID / generic fallback."""
+    if not name:
+        return True
+    n = name.strip()
+    if n in (_user_part(jid), jid) or n.lstrip('+').isdigit():
+        return True
+    return bool(re.fullmatch(r"Group \d+(-\d+)?", n))
+
+def _open_address_book():
+    if not os.path.isfile(WHATSAPP_DB_PATH):
+        return None
+    return sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True, timeout=2)
+
+def _address_book_name(jid: str) -> Optional[str]:
+    """Look a JID up in whatsmeow's contacts (mapping @lid IDs to phone numbers)."""
+    conn = None
+    try:
+        conn = _open_address_book()
+        if conn is None:
+            return None
+        cur = conn.cursor()
+        user = _user_part(jid)
+        candidates = [user]
+        try:
+            cur.execute("SELECT pn FROM whatsmeow_lid_map WHERE lid = ?", (user,))
+            candidates += [r[0] for r in cur.fetchall() if r[0]]
+            cur.execute("SELECT lid FROM whatsmeow_lid_map WHERE pn = ?", (user,))
+            candidates += [r[0] for r in cur.fetchall() if r[0]]
+        except sqlite3.Error:
+            pass
+        for c in candidates:
+            cur.execute("""
+                SELECT COALESCE(NULLIF(full_name,''), NULLIF(first_name,''),
+                                NULLIF(push_name,''), NULLIF(business_name,''))
+                FROM whatsmeow_contacts WHERE their_jid LIKE ? LIMIT 1
+            """, (f"{c}@%",))
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0]
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn:
+            conn.close()
+    return None
+
+def _address_book_jids_matching(query: str) -> List[str]:
+    """JIDs from the address book whose saved/display name matches query."""
+    conn = None
+    try:
+        conn = _open_address_book()
+        if conn is None:
+            return []
+        pat = f"%{query}%"
+        rows = conn.execute("""
+            SELECT DISTINCT their_jid FROM whatsmeow_contacts
+            WHERE LOWER(full_name) LIKE LOWER(?) OR LOWER(first_name) LIKE LOWER(?)
+               OR LOWER(push_name) LIKE LOWER(?) OR LOWER(business_name) LIKE LOWER(?)
+            LIMIT 50
+        """, (pat, pat, pat, pat)).fetchall()
+        return [r[0] for r in rows if r[0]]
+    except sqlite3.Error:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def resolve_name(jid: str, stored_name: Optional[str] = None) -> str:
+    """Best human-readable name for a JID (contact or group)."""
+    try:
+        if stored_name and not _is_placeholder(stored_name, jid):
+            return stored_name
+        if jid and not jid.endswith("@g.us"):
+            name = _address_book_name(jid if '@' in jid else f"{jid}@s.whatsapp.net")
+            if name:
+                return name
+    except Exception:
+        pass
+    return stored_name or jid
+
 def get_sender_name(sender_jid: str) -> str:
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
@@ -80,10 +170,7 @@ def get_sender_name(sender_jid: str) -> str:
             
             result = cursor.fetchone()
         
-        if result and result[0]:
-            return result[0]
-        else:
-            return sender_jid
+        return resolve_name(sender_jid, result[0] if result else None)
         
     except sqlite3.Error as e:
         print(f"Database error while getting sender name: {e}")
@@ -95,9 +182,10 @@ def get_sender_name(sender_jid: str) -> str:
 def format_message(message: Message, show_chat_info: bool = True) -> None:
     """Print a single message with consistent formatting."""
     output = ""
+    chat_name = resolve_name(message.chat_jid, message.chat_name) if message.chat_jid else message.chat_name
     
-    if show_chat_info and message.chat_name:
-        output += f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] Chat: {message.chat_name} "
+    if show_chat_info and chat_name:
+        output += f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] Chat: {chat_name} "
     else:
         output += f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] "
         
@@ -357,8 +445,12 @@ def list_chats(
         params = []
         
         if query:
-            where_clauses.append("(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?)")
+            clause = "(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?"
             params.extend([f"%{query}%", f"%{query}%"])
+            for ab_jid in _address_book_jids_matching(query):
+                clause += " OR chats.jid LIKE ?"
+                params.append(f"{_user_part(ab_jid)}@%")
+            where_clauses.append(clause + ")")
             
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
@@ -379,7 +471,7 @@ def list_chats(
         for chat_data in chats:
             chat = Chat(
                 jid=chat_data[0],
-                name=chat_data[1],
+                name=resolve_name(chat_data[0], chat_data[1]),
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
                 last_message=chat_data[3],
                 last_sender=chat_data[4],
@@ -424,12 +516,20 @@ def search_contacts(query: str) -> List[Contact]:
         for contact_data in contacts:
             contact = Contact(
                 phone_number=contact_data[0].split('@')[0],
-                name=contact_data[1],
+                name=resolve_name(contact_data[0], contact_data[1]),
                 jid=contact_data[0]
             )
             result.append(contact)
+
+        # Also include saved contacts you haven't chatted with yet
+        seen = {c.jid for c in result}
+        for ab_jid in _address_book_jids_matching(query):
+            if ab_jid.endswith("@g.us") or ab_jid in seen:
+                continue
+            seen.add(ab_jid)
+            result.append(Contact(phone_number=_user_part(ab_jid), name=resolve_name(ab_jid), jid=ab_jid))
             
-        return result
+        return result[:50]
         
     except sqlite3.Error as e:
         print(f"Database error: {e}")
@@ -472,7 +572,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         for chat_data in chats:
             chat = Chat(
                 jid=chat_data[0],
-                name=chat_data[1],
+                name=resolve_name(chat_data[0], chat_data[1]),
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
                 last_message=chat_data[3],
                 last_sender=chat_data[4],
@@ -572,7 +672,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
             
         return Chat(
             jid=chat_data[0],
-            name=chat_data[1],
+            name=resolve_name(chat_data[0], chat_data[1]),
             last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
             last_message=chat_data[3],
             last_sender=chat_data[4],
@@ -615,7 +715,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
             
         return Chat(
             jid=chat_data[0],
-            name=chat_data[1],
+            name=resolve_name(chat_data[0], chat_data[1]),
             last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
             last_message=chat_data[3],
             last_sender=chat_data[4],
@@ -629,11 +729,33 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
         if 'conn' in locals():
             conn.close()
 
+def resolve_recipient_name(name: str) -> str:
+    """Turn a contact/group name into a JID. Raises ValueError if none or several match."""
+    candidates = {}
+    for c in search_contacts(name):
+        candidates[c.jid] = c.name or c.phone_number
+    for chat in list_chats(query=name, limit=50, include_last_message=False):
+        candidates[chat.jid] = chat.name or chat.jid
+    if not candidates:
+        raise ValueError(f"No contact or group found matching '{name}'. Nothing was sent.")
+    exact = {j: n for j, n in candidates.items() if n and n.strip().lower() == name.strip().lower()}
+    pool = exact or candidates
+    if len(pool) == 1:
+        return next(iter(pool))
+    options = "; ".join(f"{n} -> {j}" for j, n in list(pool.items())[:10])
+    raise ValueError(
+        f"'{name}' matches several chats, so nothing was sent. "
+        f"Ask which one, then resend using its JID. Options: {options}"
+    )
+
+
 def normalize_recipient(recipient: str) -> str:
-    """Accept '+233 55 815 1342', '233558151342' or a full JID; reject anything else."""
+    """Accept '+233 55 815 1342', '233558151342', a full JID, or a contact/group name."""
     r = (recipient or "").strip()
     if "@" in r:
         return r
+    if re.search(r"[A-Za-z]", r):
+        return resolve_recipient_name(r)
     digits = re.sub(r"\D", "", r)
     if not 7 <= len(digits) <= 15:
         raise ValueError(

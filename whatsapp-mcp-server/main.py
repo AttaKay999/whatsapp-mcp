@@ -182,10 +182,11 @@ def send_message(
     recipient: str,
     message: str
 ) -> Dict[str, Any]:
-    """Send a WhatsApp message to a person or group. For group chats use the JID.
+    """Send a WhatsApp message to a person or group, by name, number or JID.
 
     Args:
-        recipient: The recipient - either a phone number with country code but no + or other symbols,
+        recipient: The recipient - a contact or group name (e.g. "Kofi" or "Med Class"),
+                 a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         message: The message text to send
     
@@ -211,7 +212,8 @@ def send_file(recipient: str, media_path: str, caption: str = "") -> Dict[str, A
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
     
     Args:
-        recipient: The recipient - either a phone number with country code but no + or other symbols,
+        recipient: The recipient - a contact or group name (e.g. "Kofi" or "Med Class"),
+                 a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the media file to send (image, video, document)
         caption: Optional caption shown with the image, video or document
@@ -232,7 +234,8 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
     
     Args:
-        recipient: The recipient - either a phone number with country code but no + or other symbols,
+        recipient: The recipient - a contact or group name (e.g. "Kofi" or "Med Class"),
+                 a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file)
     
@@ -359,7 +362,7 @@ def schedule_message(
     another with a few seconds between them.
 
     Args:
-        recipients: Phone number(s) with country code and no + (e.g. "233558151342"), or JID(s)
+        recipients: Contact/group name(s), phone number(s) with country code and no + (e.g. "233558151342"), or JID(s)
                     such as a group JID ending in @g.us. For several, separate them with commas.
         message: Text to send (used as the caption when media is attached)
         send_at: When to send, e.g. "2026-11-26T09:00:00Z" or "2026-11-26T09:00:00+00:00"
